@@ -109,6 +109,16 @@ jobs:
             -Dwlroots:xwayland=disabled
           ninja -C build-headless
 
+      - name: Compile Cage (headless, wlroots session disabled)
+        run: |
+          meson setup --fatal-meson-warnings --wrap-mode=nodownload build-headless-nosession \
+            -Dman-pages=disabled \
+            -Dwlroots:backends=[] \
+            -Dwlroots:renderers=[] \
+            -Dwlroots:session=disabled \
+            -Dwlroots:xwayland=disabled
+          ninja -C build-headless-nosession
+
       - name: "Smoke test: app exit code propagation"
         run: |
           export XDG_RUNTIME_DIR=/tmp/xdg-runtime
@@ -121,6 +131,14 @@ jobs:
           rc=$?
           set -e
           echo "cage exited with $rc"
+          test "$rc" -eq 42
+
+          # The no-session build must work identically at runtime.
+          set +e
+          timeout 60 ./build-headless-nosession/cage -- sh -c 'exit 42'
+          rc=$?
+          set -e
+          echo "cage (no session) exited with $rc"
           test "$rc" -eq 42
 
       - name: "Protocol test: wlr-randr output off/on and graceful shutdown"
