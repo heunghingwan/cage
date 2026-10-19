@@ -81,3 +81,65 @@ jobs:
         run: |
           meson setup --wrap-mode=nodownload build-scan-build -Dwlroots:xwayland=enabled
           ninja -C build-scan-build scan-build
+
+  headless-tests:
+    runs-on: ubuntu-latest
+    container: "archlinux:base-devel"
+    env:
+      HEADLESS_PACKAGES: "git meson wayland wayland-protocols libxkbcommon pixman libdrm systemd-libs seatd wlr-randr"
+    steps:
+      - name: Checkout Cage
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          pacman-key --init
+          pacman -Syu --noconfirm $HEADLESS_PACKAGES
+
+      - name: Fetch wlroots as a subproject
+        run: git clone https://gitlab.freedesktop.org/wlroots/wlroots.git subprojects/wlroots -b $WLROOTS_VERSION
+
+      - name: Compile Cage (headless, pixman renderer)
+        run: |
+          meson setup --fatal-meson-warnings --wrap-mode=nodownload build-headless \
+            -Dman-pages=disabled \
+            -Dwlroots:backends=[] \
+            -Dwlroots:renderers=[] \
+            -Dwlroots:session=enabled \
+            -Dwlroots:xwayland=disabled
+          ninja -C build-headless
+
+      - name: "Smoke test: app exit code propagation"
+        run: |
+          export XDG_RUNTIME_DIR=/tmp/xdg-runtime
+          mkdir -p "$XDG_RUNTIME_DIR" && chmod 700 "$XDG_RUNTIME_DIR"
+          export WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_LIBINPUT_NO_DEVICES=1
+          # Cage must start on the headless backend, run the kiosk app, and
+          # propagate its exit status as its own.
+          set +e
+          timeout 60 ./build-headless/cage -- sh -c 'exit 42'
+          rc=$?
+          set -e
+          echo "cage exited with $rc"
+          test "$rc" -eq 42
+
+      - name: "Protocol test: wlr-randr output off/on and graceful shutdown"
+        run: |
+          export XDG_RUNTIME_DIR=/tmp/xdg-runtime
+          export WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_LIBINPUT_NO_DEVICES=1
+          rm -f "$XDG_RUNTIME_DIR"/wayland-*
+          ./build-headless/cage -- sleep 10 &
+          pid=$!
+          sleep 2
+          export WAYLAND_DISPLAY=wayland-0
+          wlr-randr | grep -q 'HEADLESS-1'
+          wlr-randr --output HEADLESS-1 --off
+          sleep 1
+          wlr-randr | grep -q 'Enabled: no'
+          wlr-randr --output HEADLESS-1 --on
+          sleep 1
+          wlr-randr | grep -q 'Enabled: yes'
+          # SIGTERM must result in a graceful shutdown: cage waits for its
+          # primary client (sleep 10) and then exits with status 0.
+          kill -TERM "$pid"
+          wait "$pid"
